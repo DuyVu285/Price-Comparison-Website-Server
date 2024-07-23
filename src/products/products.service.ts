@@ -6,12 +6,10 @@ import {
 } from '@nestjs/common';
 import { Product } from 'src/schemas/product.schema';
 import { Model } from 'mongoose';
-import { ModelsService } from 'src/models/models.service';
 
 @Injectable()
 export class ProductsService {
   constructor(
-    private readonly modelsService: ModelsService,
     @InjectModel('products') private readonly productModel: Model<Product>,
   ) {}
 
@@ -35,26 +33,129 @@ export class ProductsService {
     }
   }
 
-  async searchProducts(query: string): Promise<Product[]> {
+  async getProductsByBrand(brand: string): Promise<Product[]> {
     try {
-      const modelName = await this.modelsService.findModelName(query);
-      const productCode = this.extractProductCode(query, modelName);
-
-      return await this.productModel
-        .find({ productName: { $regex: new RegExp(productCode, 'i') } })
-        .exec();
+      return await this.productModel.find({ 'modelType.brand': brand }).exec();
     } catch (error) {
-      if (error instanceof NotFoundException) {
-        throw new NotFoundException(
-          'No matching model found for the search query',
+      throw new Error(`Unable to fetch products: ${error.message}`);
+    }
+  }
+
+  async searchProducts(query: string): Promise<any[]> {
+    try {
+      const normalizedQuery = query.toLowerCase().trim();
+
+      const fullTextResults = await this.productModel
+        .find({ $text: { $search: normalizedQuery } })
+        .exec();
+
+      const regexPattern = new RegExp(
+        `.*${normalizedQuery.split(' ').join('.*')}.*`,
+        'i',
+      );
+      const regexResults = await this.productModel
+        .find({ productName: { $regex: regexPattern } })
+        .exec();
+
+      const combinedResults = [...fullTextResults, ...regexResults];
+      const uniqueResultsMap = new Map<string, any>();
+      combinedResults.forEach((product) => {
+        if (!uniqueResultsMap.has(product._id.toString())) {
+          uniqueResultsMap.set(product._id.toString(), product);
+        }
+      });
+
+      const uniqueResults = Array.from(uniqueResultsMap.values());
+
+      const scoredResults = uniqueResults.map((product) => {
+        const score = this.calculateRelevanceScore(
+          product.productName,
+          normalizedQuery,
         );
-      }
+        return { ...product.toObject(), score };
+      });
+
+      scoredResults.sort((a, b) => b.score - a.score);
+
+      return scoredResults.slice(0, 10);
+    } catch (error) {
       throw new Error(`Unable to search products: ${error.message}`);
     }
   }
 
+  async searchSimilarProducts(query: string): Promise<any[]> {
+    try {
+      const normalizedQuery = query.toLowerCase().trim();
+
+      const fullTextResults = await this.productModel
+        .find({ $text: { $search: normalizedQuery } })
+        .exec();
+
+      const regexPattern = new RegExp(
+        `.*${normalizedQuery.split(' ').join('.*')}.*`,
+        'i',
+      );
+      const regexResults = await this.productModel
+        .find({ productName: { $regex: regexPattern } })
+        .exec();
+
+      const combinedResults = [...fullTextResults, ...regexResults];
+
+      const uniqueResultsMap = new Map<string, any>();
+      combinedResults.forEach((product) => {
+        if (!uniqueResultsMap.has(product._id.toString())) {
+          uniqueResultsMap.set(product._id.toString(), product);
+        }
+      });
+
+      const uniqueResults = Array.from(uniqueResultsMap.values());
+
+      const scoredResults = uniqueResults.map((product) => {
+        const score = this.calculateRelevanceScore(
+          product.productName,
+          normalizedQuery,
+        );
+        return { ...product.toObject(), score };
+      });
+
+      const maxScore = Math.max(
+        ...scoredResults.map((product) => product.score),
+      );
+
+      const filteredResults = scoredResults.filter(
+        (product) => product.score !== maxScore,
+      );
+
+      filteredResults.sort((a, b) => b.score - a.score);
+
+      return filteredResults.slice(0, 4);
+    } catch (error) {
+      throw new Error(`Unable to search products: ${error.message}`);
+    }
+  }
+
+  private calculateRelevanceScore(productName: string, query: string): number {
+    const terms = query.split(' ');
+    let score = 0;
+
+    terms.forEach((term) => {
+      if (productName.toLowerCase().includes(term)) {
+        score += 1;
+      }
+    });
+
+    return score;
+  }
+
   async createProduct(product: any): Promise<Product> {
     try {
+      const existingProduct = await this.productModel.findOne({
+        name: product.productName,
+      });
+
+      if (existingProduct) {
+        throw new BadRequestException('Product with this name already exists');
+      }
       const createdProduct = new this.productModel(product);
       return await createdProduct.save();
     } catch (error) {
@@ -96,6 +197,7 @@ export class ProductsService {
     try {
       const now = new Date();
       const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
       const result = await this.productModel
         .aggregate([
           {
@@ -125,37 +227,17 @@ export class ProductsService {
           },
         ])
         .exec();
+
+      // Safeguard to prevent accessing properties of undefined
+      const totalItemsCount = result[0]?.totalItems[0]?.count || 0;
+      const itemsLast24HoursCount = result[0]?.itemsLast24Hours[0]?.count || 0;
+
       return {
-        totalItems: result[0].totalItems[0].count,
-        itemsLast24Hours: result[0].itemsLast24Hours[0].count,
+        totalItems: totalItemsCount,
+        itemsLast24Hours: itemsLast24HoursCount,
       };
     } catch (error) {
       throw new Error(`Unable to get summary: ${error.message}`);
     }
-  }
-
-  private extractProductCode(
-    productName: string,
-    modelName: {
-      brand: string | null;
-      series: string | null;
-      line: string | null;
-    },
-  ): string {
-    const keywordsToRemove = ['laptop', 'gaming'];
-    for (const keyword of keywordsToRemove) {
-      const keywordRegex = new RegExp(keyword, 'gi');
-      productName = productName.replace(keywordRegex, '');
-    }
-
-    ['brand', 'series', 'line'].forEach((property) => {
-      if (modelName[property]) {
-        const propertyRegex = new RegExp(modelName[property], 'i');
-        productName = productName.replace(propertyRegex, '');
-      }
-    });
-
-    productName = productName.replace(/\s+/g, ' ').trim();
-    return productName.replace(/-/g, ' ').trim();
   }
 }

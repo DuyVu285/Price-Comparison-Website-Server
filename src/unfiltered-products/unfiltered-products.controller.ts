@@ -32,7 +32,7 @@ export class UnfilteredProductsController {
     return this.unfilteredProductsService.deleteAllUnfilteredProducts();
   }
 
-  @Get('/api/unfiltered-products/summary')
+  @Get('/api/summary/unfiltered-products')
   async getSummary(): Promise<any> {
     return this.unfilteredProductsService.getSummary();
   }

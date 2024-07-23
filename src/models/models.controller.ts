@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -37,20 +38,32 @@ export class ModelsController {
     return this.modelsService.updateModel(id, model);
   }
 
-  @Delete(':id')
+  @Delete('/api/models/:id')
   async deleteModel(@Param('id') id: string): Promise<Models> {
     return this.modelsService.deleteModel(id);
   }
 
-  @Get('/api/models/check/:query')
-  async checkModels(@Param('query') query: string): Promise<boolean> {
-    if (await this.modelsService.findModelName(query)) {
-      return true;
+  @Post('/api/models/check')
+  async checkModels(@Body() body: any): Promise<{ [key: string]: boolean }> {
+    if (
+      !Array.isArray(body.productNames) ||
+      !body.productNames.every((name: any) => typeof name === 'string')
+    ) {
+      throw new BadRequestException('productNames must be an array of strings');
     }
-    return false;
+
+    const productNames = body.productNames;
+    const results = await Promise.all(
+      productNames.map(async (productName) => {
+        const result = await this.modelsService.findModelName(productName);
+        return { [productName]: !!result.brand && !!result.series };
+      }),
+    );
+
+    return results.reduce((acc, curr) => ({ ...acc, ...curr }), {});
   }
 
-  @Get('/api/models/summary')
+  @Get('/api/summary/models')
   async getSummary(): Promise<any[]> {
     return this.modelsService.getSummary();
   }

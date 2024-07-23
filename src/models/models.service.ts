@@ -3,9 +3,12 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  InternalServerErrorException,
+  ConflictException,
 } from '@nestjs/common';
 import { Models } from 'src/schemas/model.schema';
 import { Model } from 'mongoose';
+
 import * as natural from 'natural';
 const tokenizer = new natural.WordTokenizer();
 @Injectable()
@@ -36,9 +39,22 @@ export class ModelsService {
 
   async createModel(model: any): Promise<Models> {
     try {
+      const existingModel = await this.modelModel.findOne({
+        brand: model.brand,
+        series: model.series,
+        line: model.line,
+      });
+
+      if (existingModel) {
+        throw new ConflictException('Model with this name already exists.');
+      }
+
       const createdModel = new this.modelModel(model);
       return await createdModel.save();
     } catch (error) {
+      if (error instanceof ConflictException) {
+        throw error;
+      }
       throw new BadRequestException(`Unable to create model: ${error.message}`);
     }
   }
@@ -77,27 +93,32 @@ export class ModelsService {
     line: string | null;
   }> {
     const documents = await this.modelModel.find().exec();
-
+    const tokenizer = new natural.WordTokenizer();
     const tokens = tokenizer.tokenize(productName.toLowerCase());
 
     for (const doc of documents) {
       const { brand, series, line } = doc.toObject();
 
-      const brandTokens = tokenizer.tokenize(brand?.toLowerCase());
-      const seriesTokens = tokenizer.tokenize(series?.toLowerCase());
-      const lineTokens = tokenizer.tokenize(line?.toLowerCase());
+      if (!brand || !series) {
+        continue; // Skip this document if brand or series is not defined
+      }
+
+      const brandTokens = tokenizer.tokenize(brand.toLowerCase());
+      const seriesTokens = tokenizer.tokenize(series.toLowerCase());
+      const lineTokens = line ? tokenizer.tokenize(line.toLowerCase()) : [];
 
       const brandMatch = brandTokens.every((token) => tokens.includes(token));
       const seriesMatch = seriesTokens.every((token) => tokens.includes(token));
-      const lineMatch = lineTokens.every((token) => tokens.includes(token));
+      const lineMatch =
+        lineTokens.length === 0 ||
+        lineTokens.every((token) => tokens.includes(token));
 
       if (brandMatch && seriesMatch && lineMatch) {
-        const data = { brand, series, line };
-        return data;
-      } 
+        return { brand, series, line };
+      }
     }
 
-    throw new NotFoundException('Model name not found');
+    return { brand: null, series: null, line: null };
   }
 
   async getSummary(): Promise<any> {
@@ -110,7 +131,7 @@ export class ModelsService {
           },
         },
       ]);
-      return result[0];
+      return { totalItems: result[0].count };
     } catch (error) {
       throw new Error(`Unable to fetch summary: ${error.message}`);
     }
